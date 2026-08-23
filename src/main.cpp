@@ -310,11 +310,25 @@ static bool remap_property_mapping(const PropertyMapping& mapping, int target_pr
     return true;
 }
 
+static void prime_mapping_callback(const prop_info*, void*) {}
+
+// Bionic maps each /dev/__properties__ context file lazily and read-only, on the first lookup
+// that resolves into it (ContextsSerialized::GetPropAreaForName). A /proc/self/maps snapshot
+// taken before that lookup therefore cannot see the area we are about to write. Walking every
+// property first forces all readable contexts to be mapped.
+static void map_all_property_areas() {
+    (void)__system_property_foreach(prime_mapping_callback, nullptr);
+}
+
 class ScopedPropertyWriteAccess {
 public:
     ScopedPropertyWriteAccess() {
+        map_all_property_areas();
         active_ = chmod_property_tree(kPropertyDir, kWritableMode) &&
-                  collect_property_mappings(&mappings_) && remap_writable();
+                  collect_property_mappings(&mappings_);
+        if (active_) {
+            remap_writable();
+        }
     }
 
     ScopedPropertyWriteAccess(const ScopedPropertyWriteAccess&) = delete;
@@ -329,15 +343,61 @@ public:
 
     bool active() const { return active_; }
 
+    // Priming above is not airtight: GetPropAreaForName deliberately retries a context that
+    // failed the SELinux read check during foreach(), so a read-only area can still appear after
+    // the constructor ran. Writing through one faults with SEGV_ACCERR, so confirm the mapping
+    // that actually holds the target is writable immediately before handing it to bionic.
+    bool ensure_writable(const void* addr) {
+        if (!active_) {
+            return false;
+        }
+        if (find_mapping(mappings_, addr) != nullptr) {
+            return true;
+        }
+
+        std::vector<PropertyMapping> current;
+        if (!collect_property_mappings(&current)) {
+            return false;
+        }
+        const PropertyMapping* mapping = find_mapping(current, addr);
+        if (mapping == nullptr) {
+            return false;
+        }
+        if ((mapping->prot & PROT_WRITE) != 0) {
+            return true;
+        }
+        if (!remap_property_mapping(*mapping, mapping->prot | PROT_WRITE, O_RDWR)) {
+            return false;
+        }
+        // Recorded so the destructor restores the original protection.
+        mappings_.push_back(*mapping);
+        return true;
+    }
+
 private:
-    bool remap_writable() {
-        bool ok = true;
-        for (const auto& mapping : mappings_) {
-            if (!remap_property_mapping(mapping, mapping.prot | PROT_WRITE, O_RDWR)) {
-                ok = false;
+    static const PropertyMapping* find_mapping(const std::vector<PropertyMapping>& mappings,
+                                               const void* addr) {
+        const auto* target = static_cast<const char*>(addr);
+        for (const auto& mapping : mappings) {
+            const auto* base = static_cast<const char*>(mapping.start);
+            if (target >= base && target < base + mapping.length) {
+                return &mapping;
             }
         }
-        return ok;
+        return nullptr;
+    }
+
+    // Best effort: only the bionic __system_property_update path needs writable mappings, and
+    // ensure_writable() re-checks its own target. The prop-area fallback in prop_area.cpp maps
+    // O_RDWR itself and only depends on the chmod above, so one unremappable context must not
+    // fail the whole scope.
+    void remap_writable() {
+        for (const auto& mapping : mappings_) {
+            if ((mapping.prot & PROT_WRITE) != 0) {
+                continue;
+            }
+            (void)remap_property_mapping(mapping, mapping.prot | PROT_WRITE, O_RDWR);
+        }
     }
 
     bool remap_original() const {
@@ -611,7 +671,9 @@ static bool wait_for_property_change(SystemPropertyWaitFn wait_fn,
     return changed;
 }
 
-static bool set_property_direct(const char* name, const char* value) {
+static bool set_property_direct(ScopedPropertyWriteAccess& access,
+                                const char* name,
+                                const char* value) {
     SystemPropertyUpdateFn update_fn = nullptr;
     SystemPropertyAddFn add_fn = nullptr;
     if (!resolve_property_mutators(&update_fn, &add_fn)) {
@@ -621,6 +683,14 @@ static bool set_property_direct(const char* name, const char* value) {
 
     const prop_info* pi = __system_property_find(name);
     if (pi == nullptr) {
+        return false;
+    }
+    // The lookup above may have mapped this property's context area for the first time.
+    // __system_property_update writes the dirty backup area, the serial and the value, all
+    // inside that mapping.
+    if (!access.ensure_writable(pi)) {
+        verbose_log(std::string("property area holding ") + name +
+                    " is not writable, falling back to prop-area edit");
         return false;
     }
     auto* mutable_pi = const_cast<prop_info*>(pi);
@@ -847,7 +917,7 @@ static bool set_property_value(const Options& options,
             return false;
         }
 
-        if (is_read_only_property(name) || !set_property_direct(name, value)) {
+        if (is_read_only_property(name) || !set_property_direct(access, name, value)) {
             std::string path;
             std::string context;
             if (!get_property_area_path_value(kPropertyDir, name, &path, &context, error)) {
