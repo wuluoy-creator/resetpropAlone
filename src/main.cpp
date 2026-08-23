@@ -414,7 +414,6 @@ private:
     bool active_ = false;
 };
 
-using SystemPropertyAddFn = int (*)(const char*, unsigned int, const char*, unsigned int);
 using SystemPropertyUpdateFn = int (*)(prop_info*, const char*, unsigned int);
 using SystemPropertyDeleteFn = int (*)(const char*, bool);
 using SystemPropertyGetContextFn = const char* (*)(const char*);
@@ -447,22 +446,17 @@ void verbose_log(const std::string& message) {
     }
 }
 
-static bool resolve_property_mutators(SystemPropertyUpdateFn* update_fn, SystemPropertyAddFn* add_fn) {
+static SystemPropertyUpdateFn resolve_property_update() {
     static bool resolved = false;
     static SystemPropertyUpdateFn cached_update = nullptr;
-    static SystemPropertyAddFn cached_add = nullptr;
 
     if (!resolved) {
-        cached_update =
-            reinterpret_cast<SystemPropertyUpdateFn>(dlsym(RTLD_DEFAULT, "__system_property_update"));
-        cached_add =
-            reinterpret_cast<SystemPropertyAddFn>(dlsym(RTLD_DEFAULT, "__system_property_add"));
+        cached_update = reinterpret_cast<SystemPropertyUpdateFn>(
+            dlsym(RTLD_DEFAULT, "__system_property_update"));
         resolved = true;
     }
 
-    *update_fn = cached_update;
-    *add_fn = cached_add;
-    return cached_update != nullptr && cached_add != nullptr;
+    return cached_update;
 }
 
 static SystemPropertyDeleteFn resolve_property_delete() {
@@ -674,10 +668,9 @@ static bool wait_for_property_change(SystemPropertyWaitFn wait_fn,
 static bool set_property_direct(ScopedPropertyWriteAccess& access,
                                 const char* name,
                                 const char* value) {
-    SystemPropertyUpdateFn update_fn = nullptr;
-    SystemPropertyAddFn add_fn = nullptr;
-    if (!resolve_property_mutators(&update_fn, &add_fn)) {
-        std::cerr << "resetprop: property mutator symbols are unavailable at runtime\n";
+    const SystemPropertyUpdateFn update_fn = resolve_property_update();
+    if (update_fn == nullptr) {
+        std::cerr << "resetprop: __system_property_update is unavailable at runtime\n";
         return false;
     }
 
