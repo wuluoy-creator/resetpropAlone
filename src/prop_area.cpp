@@ -1,22 +1,21 @@
 #include "prop_area.hpp"
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <dirent.h>
-#include <fcntl.h>
-#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -72,8 +71,8 @@ constexpr std::uint32_t kPropAreaHeaderSize = sizeof(RawPropAreaHeader);
 constexpr std::uint32_t kTrieNodeHeaderSize = sizeof(RawTrieNodeHeader);
 constexpr std::uint32_t kPropInfoSize = sizeof(RawPropInfoHeader);
 constexpr std::uint32_t kPropAreaSerialOffset = offsetof(RawPropAreaHeader, serial);
-constexpr std::uint32_t kLongOffsetInInfo = offsetof(RawPropInfoHeader, value) +
-                                            offsetof(RawLongProperty, offset);
+constexpr std::uint32_t kLongOffsetInInfo =
+    offsetof(RawPropInfoHeader, value) + offsetof(RawLongProperty, offset);
 constexpr std::uint32_t kDirtyBackupSize = (kPropValueMax + 3u) & ~3u;
 constexpr std::uint32_t kInitialBytesUsed = kTrieNodeHeaderSize + kDirtyBackupSize;
 
@@ -102,8 +101,7 @@ void futex_wake_all(const std::uint32_t* addr) {
 #endif
 }
 
-bool collect_regular_files(const std::string& root,
-                           std::vector<std::string>* files,
+bool collect_regular_files(const std::string& root, std::vector<std::string>* files,
                            std::string* error) {
     DIR* dir = opendir(root.c_str());
     if (dir == nullptr) {
@@ -128,7 +126,7 @@ bool collect_regular_files(const std::string& root,
         }
 
         const std::string path = root + "/" + entry->d_name;
-        struct stat st {};
+        struct stat st{};
         if (lstat(path.c_str(), &st) != 0) {
             *error = format_errno("failed to stat", path);
             closedir(dir);
@@ -152,10 +150,9 @@ bool collect_regular_files(const std::string& root,
     return true;
 }
 
-bool collect_prop_area_targets(const std::string& root,
-                               std::vector<std::string>* files,
+bool collect_prop_area_targets(const std::string& root, std::vector<std::string>* files,
                                std::string* error) {
-    struct stat st {};
+    struct stat st{};
     if (lstat(root.c_str(), &st) != 0) {
         *error = format_errno("failed to stat", root);
         return false;
@@ -229,8 +226,7 @@ struct CompactRecord {
     std::optional<std::uint32_t> long_ref_prop;
 };
 
-CompactRecord make_compact_record(std::uint32_t offset,
-                                  std::uint32_t aligned_size,
+CompactRecord make_compact_record(std::uint32_t offset, std::uint32_t aligned_size,
                                   std::optional<std::uint32_t> referer_data = std::nullopt,
                                   std::optional<std::uint32_t> refer_off = std::nullopt,
                                   std::optional<std::uint32_t> long_ref_prop = std::nullopt) {
@@ -263,7 +259,7 @@ public:
             return false;
         }
 
-        struct stat st {};
+        struct stat st{};
         if (fstat(fd_, &st) != 0) {
             *error = "fstat failed: " + std::string(std::strerror(errno));
             return false;
@@ -318,9 +314,7 @@ public:
         return true;
     }
 
-    bool set_property(const std::string& key,
-                      const std::string& value,
-                      bool* created,
+    bool set_property(const std::string& key, const std::string& value, bool* created,
                       std::string* error) {
         *created = false;
 
@@ -342,8 +336,8 @@ public:
         if (prop_offset == 0) {
             std::uint32_t new_prop_offset = 0;
             if (!create_prop_info(key, value, &new_prop_offset, error) ||
-                !store_u32_data_relaxed(new_prop_offset, compose_initial_serial(serial_len, use_long),
-                                        error) ||
+                !store_u32_data_relaxed(new_prop_offset,
+                                        compose_initial_serial(serial_len, use_long), error) ||
                 !store_u32_data_release(node_offset + kNodePropOffset, new_prop_offset, error)) {
                 return false;
             }
@@ -376,8 +370,8 @@ public:
             }
             std::uint32_t new_prop_offset = 0;
             if (!create_prop_info(key, value, &new_prop_offset, error) ||
-                !store_u32_data_relaxed(new_prop_offset, compose_initial_serial(serial_len, use_long),
-                                        error) ||
+                !store_u32_data_relaxed(new_prop_offset,
+                                        compose_initial_serial(serial_len, use_long), error) ||
                 !store_u32_data_release(node_offset + kNodePropOffset, new_prop_offset, error)) {
                 return false;
             }
@@ -523,14 +517,14 @@ public:
 
             if (record.referer_data.has_value() && record.refer_off.has_value()) {
                 const auto referer_it = remap.find(*record.referer_data);
-                const std::uint32_t referer_data = referer_it == remap.end() ? *record.referer_data
-                                                                             : referer_it->second;
+                const std::uint32_t referer_data =
+                    referer_it == remap.end() ? *record.referer_data : referer_it->second;
                 const std::uint32_t field_offset = referer_data + *record.refer_off;
                 std::uint32_t field_value = new_offset;
                 if (record.long_ref_prop.has_value()) {
                     const auto prop_it = remap.find(*record.long_ref_prop);
-                    const std::uint32_t prop_offset = prop_it == remap.end() ? *record.long_ref_prop
-                                                                             : prop_it->second;
+                    const std::uint32_t prop_offset =
+                        prop_it == remap.end() ? *record.long_ref_prop : prop_it->second;
                     field_value = new_offset - prop_offset;
                 }
                 if (!write_u32_data(field_offset, field_value, error)) {
@@ -628,8 +622,7 @@ private:
         return serial;
     }
 
-    static std::uint32_t compose_updated_serial(std::uint32_t old_serial,
-                                                std::uint32_t serial_len,
+    static std::uint32_t compose_updated_serial(std::uint32_t old_serial, std::uint32_t serial_len,
                                                 bool is_long) {
         std::uint32_t serial = serial_len << 24;
         if (is_long) {
@@ -640,8 +633,7 @@ private:
     }
 
     static std::uint32_t compose_visible_serial(std::uint32_t serial_dirty,
-                                                std::uint32_t serial_len,
-                                                bool is_long) {
+                                                std::uint32_t serial_len, bool is_long) {
         std::uint32_t serial = serial_len << 24;
         if (is_long) {
             serial |= kPropInfoLongFlag;
@@ -650,8 +642,7 @@ private:
         return serial;
     }
 
-    static std::uint32_t compose_hidden_serial(std::uint32_t serial_dirty,
-                                               std::uint32_t serial_len,
+    static std::uint32_t compose_hidden_serial(std::uint32_t serial_dirty, std::uint32_t serial_len,
                                                bool is_long) {
         std::uint32_t serial = serial_len << 24;
         if (is_long) {
@@ -674,7 +665,8 @@ private:
         return true;
     }
 
-    bool store_u32_abs_relaxed(std::size_t absolute_offset, std::uint32_t value, std::string* error) {
+    bool store_u32_abs_relaxed(std::size_t absolute_offset, std::uint32_t value,
+                               std::string* error) {
         if (absolute_offset + sizeof(value) > map_size_) {
             *error = "absolute offset out of range";
             return false;
@@ -684,9 +676,7 @@ private:
         return true;
     }
 
-    bool check_range(std::uint32_t data_offset,
-                     std::uint32_t len,
-                     std::size_t* absolute_offset,
+    bool check_range(std::uint32_t data_offset, std::uint32_t len, std::size_t* absolute_offset,
                      std::string* error) const {
         const std::uint64_t end = static_cast<std::uint64_t>(data_offset) + len;
         if (end > data_size_) {
@@ -715,7 +705,8 @@ private:
         return true;
     }
 
-    bool store_u32_data_relaxed(std::uint32_t data_offset, std::uint32_t value, std::string* error) {
+    bool store_u32_data_relaxed(std::uint32_t data_offset, std::uint32_t value,
+                                std::string* error) {
         std::size_t absolute_offset = 0;
         if (!check_range(data_offset, sizeof(value), &absolute_offset, error)) {
             return false;
@@ -725,7 +716,8 @@ private:
         return true;
     }
 
-    bool store_u32_data_release(std::uint32_t data_offset, std::uint32_t value, std::string* error) {
+    bool store_u32_data_release(std::uint32_t data_offset, std::uint32_t value,
+                                std::string* error) {
         std::size_t absolute_offset = 0;
         if (!check_range(data_offset, sizeof(value), &absolute_offset, error)) {
             return false;
@@ -735,9 +727,7 @@ private:
         return true;
     }
 
-    bool read_data(std::uint32_t data_offset,
-                   std::uint32_t len,
-                   std::vector<std::uint8_t>* out,
+    bool read_data(std::uint32_t data_offset, std::uint32_t len, std::vector<std::uint8_t>* out,
                    std::string* error) const {
         std::size_t absolute_offset = 0;
         if (!check_range(data_offset, len, &absolute_offset, error)) {
@@ -747,8 +737,7 @@ private:
         return true;
     }
 
-    bool write_bytes_data(std::uint32_t data_offset,
-                          const std::vector<std::uint8_t>& bytes,
+    bool write_bytes_data(std::uint32_t data_offset, const std::vector<std::uint8_t>& bytes,
                           std::string* error) {
         std::size_t absolute_offset = 0;
         if (!check_range(data_offset, static_cast<std::uint32_t>(bytes.size()), &absolute_offset,
@@ -778,10 +767,8 @@ private:
         return true;
     }
 
-    bool read_c_string(std::uint32_t data_offset,
-                       std::optional<std::uint32_t> max_len,
-                       std::string* out,
-                       std::string* error) const {
+    bool read_c_string(std::uint32_t data_offset, std::optional<std::uint32_t> max_len,
+                       std::string* out, std::string* error) const {
         std::vector<std::uint8_t> bytes;
         if (!read_c_string_bytes(data_offset, max_len, &bytes, error)) {
             return false;
@@ -790,10 +777,8 @@ private:
         return true;
     }
 
-    bool read_c_string_bytes(std::uint32_t data_offset,
-                             std::optional<std::uint32_t> max_len,
-                             std::vector<std::uint8_t>* out,
-                             std::string* error) const {
+    bool read_c_string_bytes(std::uint32_t data_offset, std::optional<std::uint32_t> max_len,
+                             std::vector<std::uint8_t>* out, std::string* error) const {
         if (data_offset > data_size_) {
             *error = "string offset out of range";
             return false;
@@ -807,8 +792,7 @@ private:
 
         const std::uint8_t* begin = map_ + absolute_offset;
         const std::uint8_t* end = begin + limit;
-        const std::uint8_t* nul =
-            static_cast<const std::uint8_t*>(std::memchr(begin, 0, limit));
+        const std::uint8_t* nul = static_cast<const std::uint8_t*>(std::memchr(begin, 0, limit));
         if (nul == nullptr || nul > end) {
             *error = "unterminated c string";
             return false;
@@ -824,7 +808,7 @@ private:
             return false;
         }
 
-        RawTrieNodeHeader raw {};
+        RawTrieNodeHeader raw{};
         std::memcpy(&raw, map_ + absolute_offset, sizeof(raw));
 
         node->offset = offset;
@@ -848,7 +832,7 @@ private:
             return false;
         }
 
-        RawPropInfoHeader raw {};
+        RawPropInfoHeader raw{};
         std::memcpy(&raw, map_ + absolute_offset, sizeof(raw));
 
         if (!read_c_string(prop_offset + kPropInfoSize, std::nullopt, &record->name, error)) {
@@ -859,7 +843,8 @@ private:
         record->is_long = (raw.serial & kPropInfoLongFlag) != 0;
         if (record->is_long) {
             std::uint32_t rel_offset = 0;
-            std::memcpy(&rel_offset, reinterpret_cast<const std::uint8_t*>(&raw) + kLongOffsetInInfo,
+            std::memcpy(&rel_offset,
+                        reinterpret_cast<const std::uint8_t*>(&raw) + kLongOffsetInInfo,
                         sizeof(rel_offset));
             const std::uint32_t min_rel = align_up(kPropInfoSize + record->name.size() + 1, 4);
             if (rel_offset < min_rel) {
@@ -885,8 +870,7 @@ private:
         return true;
     }
 
-    bool ensure_traverse_trie(const std::string& key,
-                              std::uint32_t* node_offset,
+    bool ensure_traverse_trie(const std::string& key, std::uint32_t* node_offset,
                               std::string* error) {
         if (key.empty()) {
             *error = "property key is empty";
@@ -894,9 +878,8 @@ private:
         }
 
         const auto segments = split_segments(key);
-        if (std::any_of(segments.begin(), segments.end(), [](const std::string& segment) {
-                return segment.empty();
-            })) {
+        if (std::any_of(segments.begin(), segments.end(),
+                        [](const std::string& segment) { return segment.empty(); })) {
             *error = "property key contains empty segment";
             return false;
         }
@@ -925,16 +908,16 @@ private:
         return true;
     }
 
-    bool traverse_trie(const std::string& key, std::uint32_t* node_offset, std::string* error) const {
+    bool traverse_trie(const std::string& key, std::uint32_t* node_offset,
+                       std::string* error) const {
         if (key.empty()) {
             *error = "property key is empty";
             return false;
         }
 
         const auto segments = split_segments(key);
-        if (std::any_of(segments.begin(), segments.end(), [](const std::string& segment) {
-                return segment.empty();
-            })) {
+        if (std::any_of(segments.begin(), segments.end(),
+                        [](const std::string& segment) { return segment.empty(); })) {
             *error = "property key contains empty segment";
             return false;
         }
@@ -965,10 +948,8 @@ private:
         return true;
     }
 
-    bool find_sibling(std::uint32_t root_offset,
-                      const std::string& target,
-                      std::uint32_t* match_offset,
-                      std::string* error) const {
+    bool find_sibling(std::uint32_t root_offset, const std::string& target,
+                      std::uint32_t* match_offset, std::string* error) const {
         std::uint32_t current_offset = root_offset;
         const std::size_t max_steps =
             std::max<std::size_t>(1, data_size_ / std::max<std::uint32_t>(1, kTrieNodeHeaderSize));
@@ -1001,10 +982,8 @@ private:
         return false;
     }
 
-    bool ensure_sibling(std::uint32_t root_offset,
-                        const std::string& target,
-                        std::uint32_t* match_offset,
-                        std::string* error) {
+    bool ensure_sibling(std::uint32_t root_offset, const std::string& target,
+                        std::uint32_t* match_offset, std::string* error) {
         std::uint32_t current_offset = root_offset;
         const std::size_t max_steps =
             std::max<std::size_t>(1, data_size_ / std::max<std::uint32_t>(1, kTrieNodeHeaderSize));
@@ -1048,9 +1027,7 @@ private:
         return false;
     }
 
-    bool create_trie_node(const std::string& name,
-                          std::uint32_t* node_offset,
-                          std::string* error) {
+    bool create_trie_node(const std::string& name, std::uint32_t* node_offset, std::string* error) {
         const std::uint32_t name_len = static_cast<std::uint32_t>(name.size());
         const std::uint32_t node_size = kTrieNodeHeaderSize + name_len + 1;
         if (!allocate_obj(node_size, node_offset, error) ||
@@ -1060,8 +1037,7 @@ private:
             !write_u32_data(*node_offset + kNodeRightOffset, 0, error) ||
             !write_u32_data(*node_offset + kNodeChildrenOffset, 0, error) ||
             !write_bytes_data(*node_offset + kTrieNodeHeaderSize,
-                              reinterpret_cast<const std::uint8_t*>(name.data()),
-                              name_len,
+                              reinterpret_cast<const std::uint8_t*>(name.data()), name_len,
                               error)) {
             return false;
         }
@@ -1069,10 +1045,8 @@ private:
         return write_bytes_data(*node_offset + kTrieNodeHeaderSize + name_len, &nul, 1, error);
     }
 
-    bool create_prop_info(const std::string& name,
-                          const std::string& value,
-                          std::uint32_t* prop_offset,
-                          std::string* error) {
+    bool create_prop_info(const std::string& name, const std::string& value,
+                          std::uint32_t* prop_offset, std::string* error) {
         const std::uint32_t name_len = static_cast<std::uint32_t>(name.size());
         if (!allocate_obj(kPropInfoSize + name_len + 1, prop_offset, error) ||
             !write_u32_data(*prop_offset, 0, error)) {
@@ -1089,8 +1063,7 @@ private:
         }
 
         if (!write_bytes_data(*prop_offset + kPropInfoSize,
-                              reinterpret_cast<const std::uint8_t*>(name.data()),
-                              name_len,
+                              reinterpret_cast<const std::uint8_t*>(name.data()), name_len,
                               error)) {
             return false;
         }
@@ -1117,8 +1090,7 @@ private:
         return true;
     }
 
-    bool write_inline_value(std::uint32_t prop_offset,
-                            const std::string& value,
+    bool write_inline_value(std::uint32_t prop_offset, const std::string& value,
                             std::string* error) {
         if (value.size() >= kPropValueMax) {
             *error = "inline property value too large";
@@ -1127,18 +1099,15 @@ private:
         if (!zero_data(prop_offset + sizeof(std::uint32_t), kPropValueMax, error) ||
             !write_bytes_data(prop_offset + sizeof(std::uint32_t),
                               reinterpret_cast<const std::uint8_t*>(value.data()),
-                              static_cast<std::uint32_t>(value.size()),
-                              error)) {
+                              static_cast<std::uint32_t>(value.size()), error)) {
             return false;
         }
         const std::uint8_t nul = 0;
         return write_bytes_data(prop_offset + sizeof(std::uint32_t) + value.size(), &nul, 1, error);
     }
 
-    bool write_long_layout(std::uint32_t prop_offset,
-                           std::uint32_t name_len,
-                           const std::string& value,
-                           std::string* error) {
+    bool write_long_layout(std::uint32_t prop_offset, std::uint32_t name_len,
+                           const std::string& value, std::string* error) {
         std::uint32_t long_offset = 0;
         if (!allocate_obj(static_cast<std::uint32_t>(value.size() + 1), &long_offset, error)) {
             return false;
@@ -1153,29 +1122,23 @@ private:
         if (!zero_data(prop_offset + sizeof(std::uint32_t), kPropValueMax, error) ||
             !write_bytes_data(prop_offset + sizeof(std::uint32_t),
                               reinterpret_cast<const std::uint8_t*>(kLongLegacyError),
-                              static_cast<std::uint32_t>(std::strlen(kLongLegacyError)),
-                              error) ||
+                              static_cast<std::uint32_t>(std::strlen(kLongLegacyError)), error) ||
             !write_u32_data(prop_offset + kLongOffsetInInfo, relative_offset, error) ||
-            !write_bytes_data(long_offset,
-                              reinterpret_cast<const std::uint8_t*>(value.data()),
-                              static_cast<std::uint32_t>(value.size()),
-                              error)) {
+            !write_bytes_data(long_offset, reinterpret_cast<const std::uint8_t*>(value.data()),
+                              static_cast<std::uint32_t>(value.size()), error)) {
             return false;
         }
         const std::uint8_t nul = 0;
         return write_bytes_data(long_offset + value.size(), &nul, 1, error);
     }
 
-    bool update_inline_property(std::uint32_t prop_offset,
-                                const std::string& value,
+    bool update_inline_property(std::uint32_t prop_offset, const std::string& value,
                                 std::string* error) {
         return write_inline_value(prop_offset, value, error);
     }
 
-    bool update_long_property(std::uint32_t prop_offset,
-                              const PropRecord& record,
-                              const std::string& value,
-                              std::string* error) {
+    bool update_long_property(std::uint32_t prop_offset, const PropRecord& record,
+                              const std::string& value, std::string* error) {
         if (value.size() > record.value.size()) {
             *error = "long property value too large for in-place update";
             return false;
@@ -1184,8 +1147,7 @@ private:
         if (!zero_data(record.value_offset, capacity, error) ||
             !write_bytes_data(record.value_offset,
                               reinterpret_cast<const std::uint8_t*>(value.data()),
-                              static_cast<std::uint32_t>(value.size()),
-                              error)) {
+                              static_cast<std::uint32_t>(value.size()), error)) {
             return false;
         }
         const std::uint8_t nul = 0;
@@ -1278,9 +1240,7 @@ private:
         return true;
     }
 
-    bool allocate_obj(std::uint32_t size,
-                      std::uint32_t* offset,
-                      std::string* error) {
+    bool allocate_obj(std::uint32_t size, std::uint32_t* offset, std::string* error) {
         std::uint32_t bytes_used = 0;
         if (!get_bytes_used(&bytes_used, error)) {
             return false;
@@ -1299,14 +1259,11 @@ private:
         return true;
     }
 
-    bool collect_compact_records_from(std::uint32_t offset,
-                                      std::optional<std::uint32_t> referer_data,
-                                      std::optional<std::uint32_t> refer_off,
-                                      std::set<std::uint32_t>* seen_nodes,
-                                      std::set<std::uint32_t>* seen_props,
-                                      std::set<std::uint32_t>* seen_longs,
-                                      std::vector<CompactRecord>* records,
-                                      std::string* error) const {
+    bool collect_compact_records_from(
+        std::uint32_t offset, std::optional<std::uint32_t> referer_data,
+        std::optional<std::uint32_t> refer_off, std::set<std::uint32_t>* seen_nodes,
+        std::set<std::uint32_t>* seen_props, std::set<std::uint32_t>* seen_longs,
+        std::vector<CompactRecord>* records, std::string* error) const {
         if (!seen_nodes->insert(offset).second) {
             return true;
         }
@@ -1326,19 +1283,19 @@ private:
             if (!read_prop_record(node.prop, &record, error)) {
                 return false;
             }
-            records->push_back(make_compact_record(
-                node.prop, align_up(kPropInfoSize + record.name.size() + 1, 4), offset,
-                kNodePropOffset));
+            records->push_back(
+                make_compact_record(node.prop, align_up(kPropInfoSize + record.name.size() + 1, 4),
+                                    offset, kNodePropOffset));
             if (record.is_long && seen_longs->insert(record.value_offset).second) {
-                records->push_back(make_compact_record(
-                    record.value_offset, align_up(record.value.size() + 1, 4), node.prop,
-                    kLongOffsetInInfo, node.prop));
+                records->push_back(make_compact_record(record.value_offset,
+                                                       align_up(record.value.size() + 1, 4),
+                                                       node.prop, kLongOffsetInInfo, node.prop));
             }
         }
 
         if (node.left != 0 &&
-            !collect_compact_records_from(node.left, offset, kNodeLeftOffset, seen_nodes, seen_props,
-                                          seen_longs, records, error)) {
+            !collect_compact_records_from(node.left, offset, kNodeLeftOffset, seen_nodes,
+                                          seen_props, seen_longs, records, error)) {
             return false;
         }
         if (node.children != 0 &&
@@ -1347,8 +1304,8 @@ private:
             return false;
         }
         if (node.right != 0 &&
-            !collect_compact_records_from(node.right, offset, kNodeRightOffset, seen_nodes, seen_props,
-                                          seen_longs, records, error)) {
+            !collect_compact_records_from(node.right, offset, kNodeRightOffset, seen_nodes,
+                                          seen_props, seen_longs, records, error)) {
             return false;
         }
 
@@ -1364,10 +1321,9 @@ private:
     bool dirty_ = false;
 };
 
-bool with_each_valid_prop_area(const std::string& property_dir,
-                               const std::function<bool(const std::string&, PropAreaFile*, std::string*)>& fn,
-                               CompactSummary* summary,
-                               std::string* error) {
+template <typename Fn>
+bool with_each_valid_prop_area(const std::string& property_dir, const Fn& fn,
+                               CompactSummary* summary, std::string* error) {
     std::vector<std::string> files;
     if (!collect_prop_area_targets(property_dir, &files, error)) {
         return false;
@@ -1398,10 +1354,8 @@ bool with_each_valid_prop_area(const std::string& property_dir,
 
 }  // namespace
 
-bool set_property_in_file(const std::string& path,
-                          const std::string& name,
-                          const std::string& value,
-                          std::string* error) {
+bool set_property_in_file(const std::string& path, const std::string& name,
+                          const std::string& value, std::string* error) {
     PropAreaFile area;
     if (!area.load(path, error)) {
         return false;
@@ -1417,9 +1371,7 @@ bool set_property_in_file(const std::string& path,
     return area.save(error);
 }
 
-bool delete_property_in_file(const std::string& path,
-                             const std::string& name,
-                             bool* deleted,
+bool delete_property_in_file(const std::string& path, const std::string& name, bool* deleted,
                              std::string* error) {
     PropAreaFile area;
     if (!area.load(path, error)) {
@@ -1438,10 +1390,8 @@ bool delete_property_in_file(const std::string& path,
     return area.save(error);
 }
 
-bool delete_property_by_scanning(const std::string& property_dir,
-                                 const std::string& name,
-                                 bool* deleted,
-                                 std::string* error) {
+bool delete_property_by_scanning(const std::string& property_dir, const std::string& name,
+                                 bool* deleted, std::string* error) {
     *deleted = false;
     return with_each_valid_prop_area(
         property_dir,
@@ -1467,13 +1417,12 @@ bool delete_property_by_scanning(const std::string& property_dir,
             *deleted = removed;
             return true;
         },
-        nullptr,
-        error);
+        nullptr, error);
 }
 
 bool bump_property_area_serial(const std::string& property_dir, std::string* error) {
     std::string path = property_dir;
-    struct stat st {};
+    struct stat st{};
     if (lstat(property_dir.c_str(), &st) != 0) {
         *error = format_errno("failed to stat", property_dir);
         return false;
@@ -1500,8 +1449,7 @@ bool bump_property_area_serial(const std::string& property_dir, std::string* err
 }
 
 bool compact_property_areas(const std::string& property_dir,
-                            const std::optional<std::string>& context,
-                            CompactSummary* summary,
+                            const std::optional<std::string>& context, CompactSummary* summary,
                             std::string* error) {
     if (summary != nullptr) {
         *summary = CompactSummary{};
@@ -1509,7 +1457,7 @@ bool compact_property_areas(const std::string& property_dir,
 
     if (context.has_value()) {
         std::string path = property_dir;
-        struct stat st {};
+        struct stat st{};
         if (lstat(property_dir.c_str(), &st) != 0) {
             *error = format_errno("failed to stat", property_dir);
             return false;
@@ -1566,8 +1514,7 @@ bool compact_property_areas(const std::string& property_dir,
             }
             return true;
         },
-        summary,
-        error);
+        summary, error);
 }
 
 }  // namespace resetprop

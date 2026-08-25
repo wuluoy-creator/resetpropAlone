@@ -5,7 +5,7 @@
 /*
  * resetprop - get/set/list Android system properties.
  * Uses bionic __system_property_* API on Android.
- * Compatible with API 21+ (uses __system_property_read on API < 26).
+ * Compatible with YukiSU's Android API 31+ userspace floor.
  *
  * Copyright (C) Magisk (original resetprop)
  * Copyright (C) YukiSU - standalone C++ implementation
@@ -13,26 +13,24 @@
  * Licensed under the Apache License, Version 2.0.
  */
 
-#include <chrono>
+#include <dirent.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
 #include <algorithm>
-#include <cerrno>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <fstream>
-#include <iostream>
 #include <map>
 #include <optional>
 #include <string>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <sys/time.h>
 #include <thread>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -42,36 +40,38 @@
 
 namespace {
 
-static void usage(std::ostream& out, const char* prog) {
-    out << "resetprop - System Property Manipulation Tool\n\n"
-        << "Usage: " << prog << " [flags] [arguments...]\n\n"
-        << "Read mode arguments:\n"
-        << "  (no arguments)    print all properties\n"
-        << "  NAME              get property NAME\n\n"
-        << "Write mode arguments:\n"
-        << "  NAME VALUE        set property NAME as VALUE\n"
-        << "  -f, --file FILE   load and set properties from FILE\n"
-        << "  -d, --delete NAME delete property\n"
-        << "  -c, --compact [CONTEXT] compact property area files\n\n"
-        << "Wait mode arguments (toggled with -w):\n"
-        << "  NAME              wait until property NAME exists or changes\n"
-        << "  NAME OLD_VALUE    if property NAME is not OLD_VALUE, return immediately;\n"
-        << "                    otherwise wait until NAME changes\n\n"
-        << "General flags:\n"
-        << "  -h, --help        show this message\n"
-        << "  -v, --verbose     print verbose information to stderr\n"
-        << "  -w                switch to wait mode\n"
-        << "  --timeout SEC     timeout for wait mode\n\n"
-        << "Read mode flags:\n"
-        << "  -p                also read persistent properties from storage\n"
-        << "  -P                only read persistent properties from storage\n"
-        << "  -Z                print property context instead of value\n"
-        << "  -A, --area-path   print backing prop-area path instead of value\n"
-        << "  --context-type    print detected property context backend\n"
-        << "  --serial-path     print global property serial area path\n\n"
-        << "Write mode flags:\n"
-        << "  -n                set properties bypassing property_service\n"
-        << "  -p                also write persistent prop changes to storage\n";
+static void usage(FILE* out, const char* prog) {
+    fprintf(out,
+            "resetprop - System Property Manipulation Tool\n\n"
+            "Usage: %s [flags] [arguments...]\n\n"
+            "Read mode arguments:\n"
+            "  (no arguments)    print all properties\n"
+            "  NAME              get property NAME\n\n"
+            "Write mode arguments:\n"
+            "  NAME VALUE        set property NAME as VALUE\n"
+            "  -f, --file FILE   load and set properties from FILE\n"
+            "  -d, --delete NAME delete property\n"
+            "  -c, --compact [CONTEXT] compact property area files\n\n"
+            "Wait mode arguments (toggled with -w):\n"
+            "  NAME              wait until property NAME exists or changes\n"
+            "  NAME OLD_VALUE    if property NAME is not OLD_VALUE, return immediately;\n"
+            "                    otherwise wait until NAME changes\n\n"
+            "General flags:\n"
+            "  -h, --help        show this message\n"
+            "  -v, --verbose     print verbose information to stderr\n"
+            "  -w                switch to wait mode\n"
+            "  --timeout SEC     timeout for wait mode\n\n"
+            "Read mode flags:\n"
+            "  -p                also read persistent properties from storage\n"
+            "  -P                only read persistent properties from storage\n"
+            "  -Z                print property context instead of value\n"
+            "  -A, --area-path   print backing prop-area path instead of value\n"
+            "  --context-type    print detected property context backend\n"
+            "  --serial-path     print global property serial area path\n\n"
+            "Write mode flags:\n"
+            "  -n                set properties bypassing property_service\n"
+            "  -p                also write persistent prop changes to storage\n",
+            prog);
 }
 
 #if defined(__ANDROID__)
@@ -158,7 +158,7 @@ struct PropertyMapping {
 static bool chmod_property_tree(const std::string& path, mode_t mode) {
     DIR* dir = opendir(path.c_str());
     if (dir == nullptr) {
-        std::cerr << "resetprop: opendir failed for " << path << ": " << strerror(errno) << "\n";
+        fprintf(stderr, "resetprop: opendir failed for %s: %s\n", path.c_str(), strerror(errno));
         return false;
     }
 
@@ -169,8 +169,8 @@ static bool chmod_property_tree(const std::string& path, mode_t mode) {
         if (entry == nullptr) {
             if (errno != 0) {
                 ok = false;
-                std::cerr << "resetprop: readdir failed for " << path << ": " << strerror(errno)
-                          << "\n";
+                fprintf(stderr, "resetprop: readdir failed for %s: %s\n", path.c_str(),
+                        strerror(errno));
             }
             break;
         }
@@ -183,8 +183,7 @@ static bool chmod_property_tree(const std::string& path, mode_t mode) {
         struct stat st {};
         if (lstat(child.c_str(), &st) != 0) {
             ok = false;
-            std::cerr << "resetprop: lstat failed for " << child << ": " << strerror(errno)
-                      << "\n";
+            fprintf(stderr, "resetprop: lstat failed for %s: %s\n", child.c_str(), strerror(errno));
             continue;
         }
 
@@ -201,8 +200,7 @@ static bool chmod_property_tree(const std::string& path, mode_t mode) {
 
         if (chmod(child.c_str(), mode) != 0) {
             ok = false;
-            std::cerr << "resetprop: chmod failed for " << child << ": " << strerror(errno)
-                      << "\n";
+            fprintf(stderr, "resetprop: chmod failed for %s: %s\n", child.c_str(), strerror(errno));
         }
     }
 
@@ -232,7 +230,7 @@ static bool parse_mapping_permissions(const std::string& perms, int* prot) {
 static bool collect_property_mappings(std::vector<PropertyMapping>* mappings) {
     FILE* maps = fopen("/proc/self/maps", "re");
     if (maps == nullptr) {
-        std::cerr << "resetprop: failed to open /proc/self/maps: " << strerror(errno) << "\n";
+        fprintf(stderr, "resetprop: failed to open /proc/self/maps: %s\n", strerror(errno));
         return false;
     }
 
@@ -270,7 +268,7 @@ static bool collect_property_mappings(std::vector<PropertyMapping>* mappings) {
         int prot = PROT_NONE;
         if (!parse_mapping_permissions(perms, &prot)) {
             ok = false;
-            std::cerr << "resetprop: failed to parse mapping perms for " << path << "\n";
+            fprintf(stderr, "resetprop: failed to parse mapping perms for %s\n", path.c_str());
             continue;
         }
 
@@ -291,8 +289,8 @@ static bool collect_property_mappings(std::vector<PropertyMapping>* mappings) {
 static bool remap_property_mapping(const PropertyMapping& mapping, int target_prot, int open_flags) {
     const int fd = open(mapping.path.c_str(), open_flags | O_CLOEXEC);
     if (fd < 0) {
-        std::cerr << "resetprop: open failed for " << mapping.path << ": " << strerror(errno)
-                  << "\n";
+        fprintf(stderr, "resetprop: open failed for %s: %s\n", mapping.path.c_str(),
+                strerror(errno));
         return false;
     }
 
@@ -302,8 +300,8 @@ static bool remap_property_mapping(const PropertyMapping& mapping, int target_pr
     close(fd);
 
     if (result != mapping.start) {
-        std::cerr << "resetprop: mmap remap failed for " << mapping.path << ": "
-                  << strerror(saved_errno) << "\n";
+        fprintf(stderr, "resetprop: mmap remap failed for %s: %s\n", mapping.path.c_str(),
+                strerror(saved_errno));
         return false;
     }
 
@@ -440,10 +438,13 @@ struct Options {
 
 bool g_verbose = false;
 
+void print_error(const std::string& message) {
+    fprintf(stderr, "resetprop: %s\n", message.c_str());
+}
+
 void verbose_log(const std::string& message) {
-    if (g_verbose) {
-        std::cerr << "resetprop: " << message << "\n";
-    }
+    if (g_verbose)
+        fprintf(stderr, "resetprop: %s\n", message.c_str());
 }
 
 static SystemPropertyUpdateFn resolve_property_update() {
@@ -670,7 +671,7 @@ static bool set_property_direct(ScopedPropertyWriteAccess& access,
                                 const char* value) {
     const SystemPropertyUpdateFn update_fn = resolve_property_update();
     if (update_fn == nullptr) {
-        std::cerr << "resetprop: __system_property_update is unavailable at runtime\n";
+        fputs("resetprop: __system_property_update is unavailable at runtime\n", stderr);
         return false;
     }
 
@@ -715,13 +716,13 @@ static bool delete_property_direct(const char* name, bool* deleted) {
 
     ScopedPropertyWriteAccess access;
     if (!access.active()) {
-        std::cerr << "resetprop: failed to gain write access to property area\n";
+        fputs("resetprop: failed to gain write access to property area\n", stderr);
         return false;
     }
 
     std::string error;
     if (!resetprop::delete_property_by_scanning(kPropertyDir, name, deleted, &error)) {
-        std::cerr << "resetprop: prop-area delete failed for " << name << ": " << error << "\n";
+        fprintf(stderr, "resetprop: prop-area delete failed for %s: %s\n", name, error.c_str());
         return false;
     }
 
@@ -974,41 +975,47 @@ static bool delete_property_value(const Options& options,
 }
 
 static bool load_property_file(const Options& options, const char* path, std::string* error) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
+    FILE* file = fopen(path, "r");
+    if (file == nullptr) {
         *error = "failed to open property file";
         return false;
     }
+    (void)fcntl(fileno(file), F_SETFD, FD_CLOEXEC);
 
-    std::string line;
+    char* buffer = nullptr;
+    std::size_t capacity = 0;
     std::size_t line_number = 0;
-    while (std::getline(file, line)) {
+    bool ok = true;
+    while (getline(&buffer, &capacity, file) >= 0) {
         ++line_number;
+        std::string line(buffer);
         const auto comment_pos = line.find('#');
-        if (comment_pos != std::string::npos) {
+        if (comment_pos != std::string::npos)
             line.erase(comment_pos);
-        }
         line = trim(std::move(line));
-        if (line.empty() || line.rfind("import ", 0) == 0) {
+        if (line.empty() || line.rfind("import ", 0) == 0)
             continue;
-        }
 
         const auto equal_pos = line.find('=');
-        if (equal_pos == std::string::npos) {
+        if (equal_pos == std::string::npos)
             continue;
-        }
         std::string key = trim(line.substr(0, equal_pos));
         std::string value = trim(line.substr(equal_pos + 1));
-        if (key.empty()) {
+        if (key.empty())
             continue;
-        }
         if (!set_property_value(options, key.c_str(), value.c_str(), error)) {
             *error = "line " + std::to_string(line_number) + ": " + *error;
-            return false;
+            ok = false;
+            break;
         }
     }
-
-    return true;
+    if (ferror(file) != 0) {
+        *error = "failed to read property file";
+        ok = false;
+    }
+    free(buffer);
+    fclose(file);
+    return ok;
 }
 
 static bool wait_for_property(const char* name,
@@ -1128,15 +1135,15 @@ int resetprop_main(int argc, char** argv) {
     const char* prog = (argv && argv[0]) ? argv[0] : "resetprop";
 
 #if !defined(__ANDROID__)
-    std::cerr << "resetprop: Android only. Build with NDK for device.\n";
-    usage(std::cerr, prog);
+    fputs("resetprop: Android only. Build with NDK for device.\n", stderr);
+    usage(stderr, prog);
     return 1;
 #else
 
 #if defined(__ANDROID_API__) && __ANDROID_API__ >= 26
     if (const auto init_fn = resolve_properties_init(); init_fn != nullptr) {
         if (init_fn() != 0) {
-            std::cerr << "resetprop: __system_properties_init failed\n";
+            fputs("resetprop: __system_properties_init failed\n", stderr);
             return 1;
         }
     }
@@ -1145,15 +1152,15 @@ int resetprop_main(int argc, char** argv) {
     Options options;
     std::string error;
     if (!parse_options(argc, argv, &options, &error)) {
-        std::cerr << "resetprop: " << error << "\n";
-        usage(std::cerr, prog);
+        print_error(error);
+        usage(stderr, prog);
         return 1;
     }
     g_verbose = options.verbose;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
-            usage(std::cerr, prog);
+            usage(stderr, prog);
             return 0;
         }
     }
@@ -1163,47 +1170,48 @@ int resetprop_main(int argc, char** argv) {
                               static_cast<int>(options.compact_mode) +
                               static_cast<int>(options.file != nullptr);
     if (special_modes > 1) {
-        std::cerr << "resetprop: multiple operation modes detected\n";
+        fputs("resetprop: multiple operation modes detected\n", stderr);
         return 1;
     }
     if (options.show_context && options.show_area_path) {
-        std::cerr << "resetprop: -Z and -A are mutually exclusive\n";
+        fputs("resetprop: -Z and -A are mutually exclusive\n", stderr);
         return 1;
     }
     if (options.persist_only &&
         (options.delete_mode || options.compact_mode || options.file != nullptr ||
          options.positional.size() == 2)) {
-        std::cerr << "resetprop: -P is read-only and cannot be combined with write operations\n";
+        fputs("resetprop: -P is read-only and cannot be combined with write operations\n", stderr);
         return 1;
     }
     if (options.show_context_type || options.show_serial_path) {
         if (options.wait_mode || options.delete_mode || options.compact_mode || options.file != nullptr ||
             !options.positional.empty() || options.show_context || options.show_area_path) {
-            std::cerr << "resetprop: context-inspection flags cannot be combined with other modes\n";
+            fputs("resetprop: context-inspection flags cannot be combined with other modes\n",
+                  stderr);
             return 1;
         }
         if (options.show_context_type) {
             resetprop::PropertyContextType type;
             if (!resetprop::detect_property_context_type(kPropertyDir, &type, &error)) {
-                std::cerr << "resetprop: " << error << "\n";
+                print_error(error);
                 return 1;
             }
-            std::cout << resetprop::property_context_type_name(type) << "\n";
+            printf("%s\n", resetprop::property_context_type_name(type));
         }
         if (options.show_serial_path) {
             std::string path;
             if (!resetprop::resolve_property_serial_path(kPropertyDir, &path, &error)) {
-                std::cerr << "resetprop: " << error << "\n";
+                print_error(error);
                 return 1;
             }
-            std::cout << path << "\n";
+            printf("%s\n", path.c_str());
         }
         return 0;
     }
 
     if (options.wait_mode) {
         if (options.positional.empty() || options.positional.size() > 2) {
-            usage(std::cerr, prog);
+            usage(stderr, prog);
             return 1;
         }
         bool timed_out = false;
@@ -1212,7 +1220,7 @@ int resetprop_main(int argc, char** argv) {
                                options.timeout_seconds,
                                &timed_out)) {
             if (timed_out) {
-                std::cerr << "resetprop: timeout waiting for " << options.positional[0] << "\n";
+                fprintf(stderr, "resetprop: timeout waiting for %s\n", options.positional[0]);
                 return 2;
             }
             return 1;
@@ -1222,13 +1230,13 @@ int resetprop_main(int argc, char** argv) {
 
     if (options.compact_mode) {
         if (options.positional.size() > 1) {
-            usage(std::cerr, prog);
+            usage(stderr, prog);
             return 1;
         }
 
         ScopedPropertyWriteAccess access;
         if (!access.active()) {
-            std::cerr << "resetprop: failed to gain write access to property area\n";
+            fputs("resetprop: failed to gain write access to property area\n", stderr);
             return 1;
         }
 
@@ -1250,15 +1258,15 @@ int resetprop_main(int argc, char** argv) {
         };
 
         if (!compact_one_dir(kPropertyDir)) {
-            std::cerr << "resetprop: compact failed: " << error << "\n";
+            fprintf(stderr, "resetprop: compact failed: %s\n", error.c_str());
             return 1;
         }
         if (directory_exists(kAppcompatDir) && !compact_one_dir(kAppcompatDir)) {
-            std::cerr << "resetprop: compact failed: " << error << "\n";
+            fprintf(stderr, "resetprop: compact failed: %s\n", error.c_str());
             return 1;
         }
         if (summary.files_compacted == 0) {
-            std::cerr << "resetprop: nothing to compact\n";
+            fputs("resetprop: nothing to compact\n", stderr);
             return 1;
         }
         return 0;
@@ -1266,11 +1274,11 @@ int resetprop_main(int argc, char** argv) {
 
     if (options.file != nullptr) {
         if (!options.positional.empty()) {
-            usage(std::cerr, prog);
+            usage(stderr, prog);
             return 1;
         }
         if (!load_property_file(options, options.file, &error)) {
-            std::cerr << "resetprop: " << error << "\n";
+            print_error(error);
             return 1;
         }
         return 0;
@@ -1278,16 +1286,16 @@ int resetprop_main(int argc, char** argv) {
 
     if (options.delete_mode) {
         if (options.positional.size() != 1) {
-            usage(std::cerr, prog);
+            usage(stderr, prog);
             return 1;
         }
         bool deleted = false;
         if (!delete_property_value(options, options.positional[0], &deleted, &error)) {
-            std::cerr << "resetprop: " << error << "\n";
+            print_error(error);
             return 1;
         }
         if (!deleted) {
-            std::cerr << "resetprop: property not found: " << options.positional[0] << "\n";
+            fprintf(stderr, "resetprop: property not found: %s\n", options.positional[0]);
             return 1;
         }
         return 0;
@@ -1296,27 +1304,27 @@ int resetprop_main(int argc, char** argv) {
     if (options.positional.empty()) {
         PropertyMap properties;
         if (!list_properties(options, &properties, &error)) {
-            std::cerr << "resetprop: " << error << "\n";
+            print_error(error);
             return 1;
         }
         for (const auto& [name, value] : properties) {
             if (options.show_context) {
                 std::string context;
                 if (!get_property_context_value(name, &context, &error)) {
-                    std::cerr << "resetprop: " << error << "\n";
+                    print_error(error);
                     return 1;
                 }
-                std::cout << "[" << name << "]: [" << context << "]\n";
+                printf("[%s]: [%s]\n", name.c_str(), context.c_str());
             } else if (options.show_area_path) {
                 std::string path;
                 std::string context;
                 if (!get_property_area_path_value(kPropertyDir, name, &path, &context, &error)) {
-                    std::cerr << "resetprop: " << error << "\n";
+                    print_error(error);
                     return 1;
                 }
-                std::cout << "[" << name << "]: [" << path << "]\n";
+                printf("[%s]: [%s]\n", name.c_str(), path.c_str());
             } else {
-                std::cout << "[" << name << "]: [" << value << "]\n";
+                printf("[%s]: [%s]\n", name.c_str(), value.c_str());
             }
         }
         return 0;
@@ -1326,26 +1334,26 @@ int resetprop_main(int argc, char** argv) {
         std::string value;
         bool found = false;
         if (!get_property_value(options, options.positional[0], &value, &found, &error)) {
-            std::cerr << "resetprop: " << error << "\n";
+            print_error(error);
             return 1;
         }
         if (!found) {
-            std::cerr << "resetprop: property not found: " << options.positional[0] << "\n";
+            fprintf(stderr, "resetprop: property not found: %s\n", options.positional[0]);
             return 1;
         }
-        std::cout << value << "\n";
+        printf("%s\n", value.c_str());
         return 0;
     }
 
     if (options.positional.size() == 2) {
         if (!set_property_value(options, options.positional[0], options.positional[1], &error)) {
-            std::cerr << "resetprop: " << error << "\n";
+            print_error(error);
             return 1;
         }
         return 0;
     }
 
-    usage(std::cerr, prog);
+    usage(stderr, prog);
     return 1;
 #endif
 }

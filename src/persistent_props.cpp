@@ -1,15 +1,15 @@
 #include "persistent_props.hpp"
 
-#include <algorithm>
-#include <cerrno>
-#include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
-#include <fstream>
-#include <optional>
-#include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,23 +29,51 @@ bool file_exists(const char* path) {
     return stat(path, &st) == 0;
 }
 
+// Bulk read into an already-open fd. Streams went through streambuf one
+// character at a time and had no size hint.
+bool read_fd_all(int fd, std::string* out) {
+    struct stat status{};
+    if (fstat(fd, &status) == 0 && S_ISREG(status.st_mode) && status.st_size > 0) {
+        out->reserve(static_cast<std::size_t>(status.st_size));
+    }
+    char buffer[65536];
+    for (;;) {
+        const ssize_t count = read(fd, buffer, sizeof(buffer));
+        if (count > 0) {
+            out->append(buffer, static_cast<std::size_t>(count));
+            continue;
+        }
+        if (count == 0) {
+            return true;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        return false;
+    }
+}
+
 bool read_file(const std::string& path, std::string* contents, std::string* error) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
         *error = format_errno("failed to open", path);
         return false;
     }
-    contents->assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return true;
+    const bool ok = read_fd_all(fd, contents);
+    close(fd);
+    if (!ok) {
+        *error = format_errno("failed to read", path);
+        contents->clear();
+    }
+    return ok;
 }
 
 bool read_binary_file(const std::string& path, std::vector<std::uint8_t>* bytes, std::string* error) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-        *error = format_errno("failed to open", path);
+    std::string contents;
+    if (!read_file(path, &contents, error)) {
         return false;
     }
-    bytes->assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    bytes->assign(contents.begin(), contents.end());
     return true;
 }
 

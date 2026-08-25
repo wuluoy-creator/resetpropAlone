@@ -1,15 +1,17 @@
 #include "property_contexts.hpp"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <string>
-#include <sys/stat.h>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -46,24 +48,34 @@ bool is_regular_file(const std::string& path) {
 }
 
 bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>* data, std::string* error) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
         *error = "failed to open " + path;
         return false;
     }
-    file.seekg(0, std::ios::end);
-    const auto size = file.tellg();
-    if (size < 0) {
+    struct stat status{};
+    if (fstat(fd, &status) != 0 || status.st_size < 0) {
         *error = "failed to stat " + path;
+        close(fd);
         return false;
     }
-    file.seekg(0, std::ios::beg);
-    data->resize(static_cast<std::size_t>(size));
-    if (!data->empty() &&
-        !file.read(reinterpret_cast<char*>(data->data()), static_cast<std::streamsize>(data->size()))) {
+    data->resize(static_cast<std::size_t>(status.st_size));
+    std::size_t filled = 0;
+    while (filled < data->size()) {
+        const ssize_t count = read(fd, data->data() + filled, data->size() - filled);
+        if (count > 0) {
+            filled += static_cast<std::size_t>(count);
+            continue;
+        }
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
         *error = "failed to read " + path;
+        close(fd);
+        data->clear();
         return false;
     }
+    close(fd);
     return true;
 }
 
@@ -450,14 +462,22 @@ private:
     };
 
     bool load_file(const std::string& path, std::string* error) {
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            *error = "failed to open " + path;
+        std::vector<std::uint8_t> bytes;
+        if (!read_file_bytes(path, &bytes, error)) {
             return false;
         }
 
-        std::string line;
-        while (std::getline(file, line)) {
+        const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        std::size_t begin = 0;
+        while (begin < text.size()) {
+            std::size_t end = text.find('\n', begin);
+            const bool last = (end == std::string_view::npos);
+            if (last) {
+                end = text.size();
+            }
+            std::string line(text.substr(begin, end - begin));
+            begin = last ? text.size() : end + 1;
+
             const auto comment_pos = line.find('#');
             if (comment_pos != std::string::npos) {
                 line.erase(comment_pos);
@@ -467,10 +487,19 @@ private:
                 continue;
             }
 
-            std::istringstream iss(line);
+            constexpr std::string_view kWhitespace = " \t\r\f\v";
             std::vector<std::string> fields;
-            for (std::string field; iss >> field;) {
-                fields.push_back(std::move(field));
+            for (std::size_t cursor = 0; cursor < line.size();) {
+                cursor = line.find_first_not_of(kWhitespace, cursor);
+                if (cursor == std::string::npos) {
+                    break;
+                }
+                std::size_t field_end = line.find_first_of(kWhitespace, cursor);
+                if (field_end == std::string::npos) {
+                    field_end = line.size();
+                }
+                fields.emplace_back(line, cursor, field_end - cursor);
+                cursor = field_end;
             }
             if (fields.size() < 2 || fields[0].rfind("ctl.", 0) == 0) {
                 continue;
