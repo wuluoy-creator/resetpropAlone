@@ -5,10 +5,10 @@
 /*
  * resetprop - get/set/list Android system properties.
  * Uses bionic __system_property_* API on Android.
- * Compatible with YukiSU's Android API 31+ userspace floor.
+ * Compatible with ZySU's Android API 31+ userspace floor.
  *
  * Copyright (C) Magisk (original resetprop)
- * Copyright (C) YukiSU - standalone C++ implementation
+ * Copyright (C) ZySU - standalone C++ implementation
  *
  * Licensed under the Apache License, Version 2.0.
  */

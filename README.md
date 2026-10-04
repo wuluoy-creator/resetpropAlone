@@ -1,6 +1,6 @@
 # resetpropAlone
 
-Standalone (or multi-call) **resetprop** — Magisk-style Android system property tool for YukiSU.
+Standalone (or multi-call) **resetprop** — Magisk-style Android system property tool for ZySU.
 
 - **Entry**: `resetprop_main(int argc, char **argv)` for use when linked into ksud; define `RESETPROP_STANDALONE` for a standalone executable with `main()`.
 - **Android**: Uses bionic `__system_property_*` APIs plus direct prop-area mmap edits for `-n`, delete fallback when `__system_property_delete` is unavailable, prop-area compaction, persistent property storage support, and property-context parsing across `serialized`, `split`, and `pre-split` layouts.
